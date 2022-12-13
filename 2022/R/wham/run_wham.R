@@ -13,8 +13,6 @@ source('2022/R/wham/get_aging_error.R')
 # Read SS model:
 
 data_file = r4ss::SS_readdat_3.30(file = '2022/Stock_Synthesis_files/Model19.1a (22) - wADFG/GOAPcod2022Oct25_wADFG.dat')
-# ctl_file = r4ss::SS_readctl_3.30(datlist = data_file,
-                                 # file = '2022/Stock_Synthesis_files/Model19.1a (22) - wADFG/Model19.1a_22.ctl')
 SS_report = r4ss::SS_output(dir = '2022/Stock_Synthesis_files/Model19.1a (22) - wADFG', covar = FALSE) # from OM
 
 # Some colors to plot
@@ -36,107 +34,116 @@ LWpars = c(SS_report$Growth_Parameters$WtLen1, SS_report$Growth_Parameters$WtLen
 GWpars = c(SS_report$Growth_Parameters$K, SS_report$Growth_Parameters$Linf, 
            SS_report$Growth_Parameters$L_a_A1,
            SS_report$Growth_Parameters$CVmin, SS_report$Growth_Parameters$CVmax)
-
-## SKIPPED SLX ##
-SS_report$ageselex
-names(SS_report)
-subset(SS_report$parameters, grepl('Size_', rownames(SS_report$parameters)))
-selpars1 = c(71.991,-9.707,5.83,4.0866,-10,0.6964)
-selpars2 = c(21.3437,-1.22,3.63,7.315,-10,-0.7167)
+selpars1 = SS_report$parameters$Value[grepl('FshTrawl', SS_report$parameters$Label) & !grepl('BLK|DEV|dev', SS_report$parameters$Label)] #c(57.4654 ,-4.10776,5.08886,-0.164564,-999,10)
+selppars2 = SS_report$parameters$Value[grepl('FshLL', SS_report$parameters$Label) & !grepl('BLK|DEV|dev', SS_report$parameters$Label)] #c(65.9927,-5.062,5.11804,10,-999,10)
+selppars3 = SS_report$parameters$Value[grepl('FshPot', SS_report$parameters$Label) & !grepl('BLK|DEV|dev', SS_report$parameters$Label)]  #c(70.5935,-12.1134,5.01767,4.07254,-999,0.203773)
+selppars4 = SS_report$parameters$Value[grepl('Srv', SS_report$parameters$Label) & !grepl('Q|LL|BLK|DEV|dev', SS_report$parameters$Label)]  #c(60.2422,-11.1713,5.35012,4.64514,-2.84308,-1.01928)
+selppars5 = SS_report$parameters$Value[grepl('LLSrv', SS_report$parameters$Label) & !grepl('Q|BLK|DEV|dev', SS_report$parameters$Label)]  #c(65.5972,-12.5095,4.69815,4.57853,-999,-0.481806)
 
 # Prepare input data: ------------------------------------------------
 wham_data = list()
 wham_data$ages = 1:n_ages 
 wham_data$lengths = length_vector
 wham_data$years = as.integer(min_year:max_year)
-
-# Catch information:
+#Catch information:
 wham_data$n_fleets = data_file$Nfleet
 wham_data$agg_catch = matrix(data_file$catch$catch[data_file$catch$year > 0], nrow = n_years, ncol = data_file$Nfleet)
 wham_data$use_agg_catch = matrix(1L, nrow = n_years, ncol = data_file$Nfleet)
 wham_data$catch_cv = matrix(data_file$catch$catch_se[data_file$catch$year > 0], nrow = n_years, ncol = data_file$Nfleet)
-
 # Survey information:
 tmp_data <- data_file$CPUE[data_file$CPUE$index > 0,]
-tmp_data2 <- merge(expand.grid(year = wham_data$years, index = unique(tmp_data$index)),
-                  tmp_data, by = c('year', 'index'), all.x = TRUE)
+tmp_data2 <- full_join(expand.grid(year = wham_data$years, index = unique(tmp_data$index)),
+                       tmp_data, by = c('year', 'index'))
 wham_data$n_indices = length(unique(tmp_data2$index))
 wham_data$agg_indices = matrix(tmp_data2$obs, nrow = n_years, ncol = wham_data$n_indices)
+wham_data$agg_indices[is.na(wham_data$agg_indices)] = 0
 wham_data$index_cv = matrix(tmp_data2$se_log, nrow = n_years, ncol = wham_data$n_indices)
+wham_data$index_cv[is.na(wham_data$index_cv)] = 0
 wham_data$units_indices = matrix(0L, nrow = n_years, ncol = wham_data$n_indices)
 wham_data$use_indices = matrix(1L, nrow = n_years, ncol = wham_data$n_indices)
 wham_data$use_indices[is.na(tmp_data2$obs)] = -1
-# is this necessary? i thought NAs were ok?
-# tmp_data2$obs[is.na(tmp_data2$obs)] = 0
-# tmp_data2$se_log[is.na(tmp_data2$se_log)] = 0
-
 # Len comps catch:
-unique(data_file$lencomp$FltSvy)
-# lencomp_fleet = data_file$lencomp[data_file$lencomp$FltSvy == 1, ]
-# lencomp_fleet = data_file$lencomp[data_file$lencomp$FltSvy > 0, ]
-lencomp_fleet[lencomp_fleet$FltSvy %in% c(1, 2, 3), ]
-
-(unique(lencomp_fleet$FltSvy))
-lencomp_fleet2 = as.matrix(lencomp_fleet[,7:ncol(lencomp_fleet)])
-wham_lencomps = matrix(NA, ncol = length(length_vector), nrow = n_years)
-for(i in 1:length(length_vector)) {
-  if(i == length(length_vector) - 2) wham_lencomps[,i+2] = lencomp_fleet2[,ncol(lencomp_fleet2)]
-  if(i < length(length_vector)-2) wham_lencomps[,i+2] = rowSums(lencomp_fleet2[,(2*i-1):(2*i)])
+wham_lencomps = array(NA, dim = c(wham_data$n_fleets, n_years, length(length_vector)))
+wham_lenNeff = matrix(0, ncol = wham_data$n_fleets, nrow = n_years)
+wham_lenuse = matrix(-1, ncol = wham_data$n_fleets, nrow = n_years)
+for(j in 1:wham_data$n_fleets) {
+  
+  lencomp_fleet = data_file$lencomp[data_file$lencomp$FltSvy == j, ]
+  lencomp_fleet2 = as.matrix(lencomp_fleet[,7:ncol(lencomp_fleet)])
+  lencomp_temp = matrix(NA, ncol = length(length_vector), nrow = n_years)
+  for(i in 1:length(length_vector)) {
+    if(i == length(length_vector)) lencomp_temp[match(lencomp_fleet$Yr, wham_data$years),i] = lencomp_fleet2[,ncol(lencomp_fleet2)]
+    else lencomp_temp[match(lencomp_fleet$Yr, wham_data$years),i] = rowSums(lencomp_fleet2[,(2*i-1):(2*i)])
+  }
+  wham_lencomps[j,,] = lencomp_temp/rowSums(lencomp_temp)
+  wham_lenNeff[match(lencomp_fleet$Yr, wham_data$years),j] = lencomp_fleet$Nsamp
+  wham_lenuse[match(lencomp_fleet$Yr, wham_data$years),j] = 1
+  
 }
-wham_lencomps[which(is.na(wham_lencomps))] = 0
 wham_data$catch_pal = wham_lencomps
-wham_data$catch_NeffL = matrix(lencomp_fleet$Nsamp, nrow = n_years, ncol = 1)
-wham_data$use_catch_pal = matrix(1, nrow = n_years, ncol = 1)
+wham_data$catch_NeffL = wham_lenNeff
+wham_data$use_catch_pal = wham_lenuse
 # Len comps index:
-lencomp_index = data_file$lencomp[data_file$lencomp$FltSvy == 2, ]
-tmp_data = data.frame(Yr = wham_data$years)
-tmp_data2 = merge(tmp_data, lencomp_index, by = 'Yr', all.x = TRUE)
-tmp_data2[is.na(tmp_data2)] = 0
-lencomp_fleet2 = as.matrix(tmp_data2[,7:ncol(tmp_data2)])
-wham_lencomps = matrix(NA, ncol = length(length_vector), nrow = n_years)
-for(i in 1:length(length_vector)) {
-  if(i == length(length_vector)-2) wham_lencomps[,i+2] = lencomp_fleet2[,ncol(lencomp_fleet2)]
-  if(i < length(length_vector)-2) wham_lencomps[,i+2] = rowSums(lencomp_fleet2[,(2*i-1):(2*i)])
+wham_lencomps = array(NA, dim = c(wham_data$n_indices, n_years, length(length_vector)))
+wham_lenNeff = matrix(0, ncol = wham_data$n_indices, nrow = n_years)
+wham_lenuse = matrix(-1, ncol = wham_data$n_indices, nrow = n_years)
+for(j in 1:wham_data$n_indices) {
+  
+  lencomp_fleet = data_file$lencomp[data_file$lencomp$FltSvy == j + wham_data$n_fleets, ]
+  lencomp_fleet2 = as.matrix(lencomp_fleet[,7:ncol(lencomp_fleet)])
+  lencomp_temp = matrix(NA, ncol = length(length_vector), nrow = n_years)
+  for(i in 1:length(length_vector)) {
+    if(i == length(length_vector)) lencomp_temp[match(lencomp_fleet$Yr, wham_data$years),i] = lencomp_fleet2[,ncol(lencomp_fleet2)]
+    else lencomp_temp[match(lencomp_fleet$Yr, wham_data$years),i] = rowSums(lencomp_fleet2[,(2*i-1):(2*i)])
+  }
+  wham_lencomps[j,,] = lencomp_temp/rowSums(lencomp_temp)
+  wham_lenNeff[match(lencomp_fleet$Yr, wham_data$years),j] = lencomp_fleet$Nsamp
+  wham_lenuse[match(lencomp_fleet$Yr, wham_data$years),j] = 1
+  
 }
-wham_lencomps[which(is.na(wham_lencomps))] = 0
 wham_data$index_pal = wham_lencomps
-wham_data$index_NeffL =  matrix(tmp_data2$Nsamp, nrow = n_years, ncol = 1)
-wham_data$use_index_pal = matrix(ifelse(test = tmp_data2$Nsamp == 0, yes = -1, no = 1), 
-                                 nrow = n_years, ncol = 1)
-# Age comps index:
-agecomp_index = data_file$agecomp
-tmp_data = data.frame(Yr = wham_data$years)
-tmp_data2 = merge(tmp_data, agecomp_index, by = 'Yr', all.x = TRUE)
-tmp_data3 = t(apply(tmp_data2[,11:ncol(tmp_data2)], 1, function(x) { x/sum(x) }))
-tmp_data3[is.na(tmp_data3)] = 0
-tmp_data4 = cbind(tmp_data3, matrix(0, ncol = 8, nrow = n_years))
-wham_data$index_paa = as.matrix(tmp_data4)
-wham_data$index_Neff = matrix(ifelse(test = is.na(tmp_data2$Nsamp), yes = 0, no = tmp_data2$Nsamp),
-                              nrow = n_years, ncol = 1)
-wham_data$use_index_paa = matrix(ifelse(test = is.na(tmp_data2$Nsamp), yes = -1, no = 1),
-                                 nrow = n_years, ncol = 1)
-# Add aging error:
-wham_data$index_aging_error = array(NA, dim = c(1,n_ages, n_ages))
-wham_data$index_aging_error[1,,] = get_aging_error_matrix(obs_age = SS_report$age_error_mean$type1[2:21],
-                                                       sd = SS_report$age_error_sd$type1[2:21])
-wham_data$use_index_aging_error = 1
+wham_data$index_NeffL = wham_lenNeff
+wham_data$use_index_pal = wham_lenuse
+# CAAL fishery and index TODO:
+# agecomp_index = data_file$agecomp
+# tmp_data = data.frame(Yr = wham_data$years)
+# tmp_data2 = merge(tmp_data, agecomp_index, by = 'Yr', all.x = TRUE)
+# tmp_data3 = t(apply(tmp_data2[,11:ncol(tmp_data2)], 1, function(x) { x/sum(x) }))
+# tmp_data3[is.na(tmp_data3)] = 0
+# tmp_data4 = cbind(tmp_data3, matrix(0, ncol = 8, nrow = n_years))
+# wham_data$index_paa = as.matrix(tmp_data4)
+# wham_data$index_Neff = matrix(ifelse(test = is.na(tmp_data2$Nsamp), yes = 0, no = tmp_data2$Nsamp),
+#                               nrow = n_years, ncol = 1)
+# wham_data$use_index_paa = matrix(ifelse(test = is.na(tmp_data2$Nsamp), yes = -1, no = 1),
+#                                  nrow = n_years, ncol = 1)
+# Add aging error (ADD YEAR DIMENSION):
+base_aging_error = get_aging_error_matrix(obs_age = SS_report$age_error_mean$type1[2:(n_ages+1)],
+                                          sd = SS_report$age_error_sd$type1[2:(n_ages+1)])
+wham_data$index_aging_error = array(NA, dim = c(wham_data$n_indices,n_ages, n_ages))
+wham_data$index_aging_error[1,,] = base_aging_error
+wham_data$index_aging_error[2,,] = base_aging_error
+wham_data$use_index_aging_error = c(1,1)
+wham_data$catch_aging_error = array(NA, dim = c(wham_data$n_fleets,n_ages, n_ages))
+wham_data$catch_aging_error[1,,] = base_aging_error
+wham_data$catch_aging_error[2,,] = base_aging_error
+wham_data$catch_aging_error[3,,] = base_aging_error
+wham_data$use_catch_aging_error = c(1,1,1)
 # selectivity and F options
-wham_data$selblock_pointer_fleets = matrix(1L, ncol = 1, nrow = n_years)
-wham_data$F = matrix(0.2, ncol = 1, nrow = n_years)
-wham_data$selblock_pointer_indices = matrix(2L, ncol = 1, nrow = n_years)
-wham_data$fracyr_indices = matrix(0.5, ncol = 1, nrow = n_years)
+wham_data$selblock_pointer_fleets = matrix(rep(c(1,2,3), each = n_years), ncol = wham_data$n_fleets, nrow = n_years)
+wham_data$F = matrix(0.2, ncol = wham_data$n_fleets, nrow = n_years)
+wham_data$selblock_pointer_indices = matrix(rep(c(4,5), each = n_years), ncol = wham_data$n_indices, nrow = n_years)
+wham_data$fracyr_indices = matrix(0.5, ncol = wham_data$n_indices, nrow = n_years)
 wham_data$fracyr_SSB = matrix(0, ncol = 1, nrow = n_years)
-wham_data$age_L1 = 1.5 # age for L1
-# WAA information
-wham_data$waa_pointer_indices = 1
-wham_data$waa_pointer_fleets = 2
-wham_data$waa_pointer_totcatch = 1
+# WAA information 
+wham_data$waa_pointer_indices = rep(1, times = wham_data$n_indices)
+wham_data$waa_pointer_fleets = rep(2, times = wham_data$n_fleets)
+wham_data$waa_pointer_totcatch = 2
 wham_data$waa_pointer_ssb = 3
 wham_data$waa_pointer_jan1 = 3
 wham_data$maturity = matrix(rep(SS_report$endgrowth[2:(n_ages+1),18], times = max_year - min_year + 1),
                             ncol = n_ages, nrow = max_year - min_year + 1, byrow = TRUE) 
 
-wham_data$Fbar_ages = 3L:20L
+wham_data$Fbar_ages = 3L:10L
 wham_data$percentSPR = 40
 wham_data$percentFXSPR = 100
 wham_data$percentFMSY = 100
@@ -146,21 +153,26 @@ wham_data$simulate_period = c(1,0)
 wham_data$bias_correct_process = 1
 wham_data$bias_correct_observation = 1
 
-# Ecov information (input later on)
-env1 = data_file$envdat$Value[data_file$envdat$Variable == 2]
-env2 = data_file$envdat$Value[data_file$envdat$Variable == 3]
+# Ecov information - temperature on LLSrv (FltSrv 5) catchability:
+# env1 = data_file$envdat$Value[data_file$envdat$Variable == 1]
+env1 = merge(data.frame(Yr = wham_data$years, Variable = 1),
+             data_file$envdat[data_file$envdat$Variable == 1,],
+             by = c('Yr', 'Variable'), all.x = TRUE) %>% 
+  mutate(logsigma = log(0.0001),
+         use = ifelse(is.na(Value), -1, 1))
+
 # ecov <- list(
-#   label = c("env1", "env2"),
-#   mean = matrix(c(env1, env2), ncol = 2),
-#   logsigma = matrix(log(0.0001), ncol = 2, nrow=n_years), # no obs error
-#   year = min_year:max_year,
-#   use_obs = matrix(1L, ncol=2, nrow=n_years),
-#   lag = list(rep(0, 7), rep(0, 7)),
-#   ages = list(1:n_ages,1:n_ages),
-#   process_model = c('ar1', 'ar1'), 
-#   where = list('LW','LW'), 
-#   where_subindex = c(1,2), 
-#   how = c(1,1)) 
+#   label = c("env1"),
+#   mean = as.matrix(env1$Value),
+#   logsigma = as.matrix(env1$logsigma), # no obs error
+#   year = wham_data$years,
+#   use_obs = as.matrix(env1$use),
+#   lag = list(rep(0, 1)), # ? no lag
+#   ages = list(1:n_ages,1:n_ages), # ? not age-specific
+#   process_model = c('ar1'), # ? 
+#   where = list('q'), # ?
+#   where_subindex = c(0, 1), # ?
+#   how = c(1)) # ?
 
 # Prepare input object:
 input = prepare_wham_input(model_name="cod_1",
